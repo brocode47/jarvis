@@ -187,11 +187,15 @@ IntentProducer = Callable[[str], AsyncIterator[Intent]]
 # Leading filler patterns. Stripped iteratively until no more match.
 _FILLERS: tuple[re.Pattern, ...] = (
     re.compile(r"^hey jarvis,?\s+"),
+    re.compile(r"^jarvis,?\s+"),
+    re.compile(r"^جاروس،?\s*"),
     re.compile(r"^(?:can|could|would) you (?:please )?"),
     re.compile(r"^please\s+"),
+    re.compile(r"^barah-?e-?karam\s+"),
+    re.compile(r"^براہ\s*کرم\s*"),
 )
 
-_TRAILING_PUNCT = re.compile(r"[\s.!?,]+$")
+_TRAILING_PUNCT = re.compile(r"[\s.!?,۔؟]+$")
 
 
 def _normalize(text: str) -> str:
@@ -222,7 +226,8 @@ def _normalize(text: str) -> str:
 # intentionally miss and fall through to the LLM.
 _STOP_PATTERN: re.Pattern[str] = re.compile(
     r"^(?:stop|shut\s+up|quiet|be\s+quiet|never\s*mind|cancel"
-    r"|that'?s\s+enough|enough)$",
+    r"|that'?s\s+enough|enough|ruk\s*jao|bas|chup|band\s*karo"
+    r"|روک\s*جاؤ|بس|چپ|بند\s*کرو)$",
     re.IGNORECASE,
 )
 

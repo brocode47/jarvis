@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -68,15 +69,25 @@ class STTLoadError(RuntimeError):  # noqa: N818
     """Raised when the whisper model cannot be loaded."""
 
 
-def _resolve_model_id(model_size: str, language: str) -> str:
+def _resolve_model_id(model_size: str, language: str | None) -> str:
     """Map (model_size, language) to a faster-whisper model identifier.
 
     English-specific variants exist for tiny/base/small/medium and are
     slightly faster + more accurate for English-only use, so we prefer
-    them when language is 'en' and the size has an English variant."""
+    them when language is 'en' and the size has an English variant.
+    When language is 'auto', 'ur', or None, we always use the multilingual
+    variant (stripping any accidental '.en' suffix)."""
+    if language in ("auto", "ur", "multilingual", None):
+        return model_size.removesuffix(".en")
     if language == "en" and model_size in ("tiny", "base", "small", "medium"):
         return f"{model_size}.en"
     return model_size
+
+
+DEFAULT_INITIAL_PROMPT = (
+    "Jarvis, meri baat suno. Notepad kholo. Calculator kholo. "
+    "جی سر، آج موسم کیسا ہے؟ Please open Chrome."
+)
 
 
 class FasterWhisperSTT:
@@ -85,17 +96,25 @@ class FasterWhisperSTT:
     def __init__(
         self,
         *,
-        model_size: str = "base",
-        language: str = "en",
+        model_size: str = "tiny.en",
+        language: str | None = "en",
         compute_type: str = "int8",
         download_root: Path | None = None,
         device: str = "cpu",
+        initial_prompt: str | None = None,
+        beam_size: int = 5,
     ) -> None:
         self.model_size = model_size
         self.language = language
         self.compute_type = compute_type
         self._download_root = download_root
         self._device = device
+        self.initial_prompt = (
+            initial_prompt
+            if initial_prompt is not None
+            else (DEFAULT_INITIAL_PROMPT if language in ("auto", "ur", None) else None)
+        )
+        self.beam_size = beam_size
         self._model = None
         self.is_loaded: bool = False
 
@@ -175,14 +194,17 @@ class FasterWhisperSTT:
         # win even though the pipeline already runs VAD upstream -- they
         # operate on different signal shapes (live frames vs. captured
         # utterance).
+        lang = None if self.language in ("auto", "multilingual", None, "") else self.language
+        kwargs: dict[str, Any] = {
+            "language": lang,
+            "beam_size": self.beam_size,
+            "vad_filter": True,
+        }
+        if self.initial_prompt:
+            kwargs["initial_prompt"] = self.initial_prompt
+
         segments, _info = self._model.transcribe(
             audio,
-            language=self.language,
-            beam_size=5,
-            vad_filter=True,
+            **kwargs,
         )
-        # Materialize the segment generator INSIDE this thread; iterating
-        # the generator IS the inference work. Returning an unconsumed
-        # generator across the to_thread boundary would defer that work
-        # back onto the loop thread, defeating the whole point.
         return "".join(seg.text for seg in segments)

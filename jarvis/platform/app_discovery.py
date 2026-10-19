@@ -35,14 +35,18 @@ _OPEN_LEADING_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^please\s+", re.IGNORECASE),
     re.compile(r"^(?:i\s+)?(?:want\s+(?:you\s+)?to\s+)", re.IGNORECASE),
     re.compile(r"^(?:open|launch|start|run)\s+", re.IGNORECASE),
-    re.compile(r"^(?:the\s+)?(?:app(?:lication)?|programme?|program)\s+", re.IGNORECASE),
     re.compile(r"^(?:my|the|a|an)\s+", re.IGNORECASE),
+    re.compile(r"^(?:mere\s+liye|ab)\s+", re.IGNORECASE),
+    re.compile(r"^(?:میرے\s+لیے|اب)\s+", re.IGNORECASE),
 )
 _OPEN_TRAILING_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\s+for\s+me$", re.IGNORECASE),
     re.compile(r"\s+please$", re.IGNORECASE),
     re.compile(r"\s+sir$", re.IGNORECASE),
     re.compile(r"\s+up$", re.IGNORECASE),
+    re.compile(r"\s+(?:bhi\s+)?kholo$", re.IGNORECASE),
+    re.compile(r"\s+(?:بھی\s+)?کھولو$", re.IGNORECASE),
+    re.compile(r"\s+khol\s*(?:do|dein)?$", re.IGNORECASE),
 )
 
 

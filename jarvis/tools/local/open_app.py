@@ -58,6 +58,10 @@ _APP_ALIASES: dict[str, str] = {
     "file explorer": "explorer",
     "discord": "discord",
     "steam": "steam",
+    "نوٹ پیڈ": "notepad",
+    "کیلکولیٹر": "calc",
+    "کروم": "chrome",
+    "گوگل کروم": "chrome",
 }
 
 

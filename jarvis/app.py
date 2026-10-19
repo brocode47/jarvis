@@ -56,6 +56,7 @@ from jarvis.audio.devices import AudioInputSource
 from jarvis.audio.pipeline import AudioPipeline
 from jarvis.audio.stt import FasterWhisperSTT
 from jarvis.audio.tts import PiperTTS
+from jarvis.audio.urdu_tts import MultilingualTTS, UrduMmsTTS
 from jarvis.audio.vad import SileroVAD
 from jarvis.audio.wake_word import OpenWakeWord
 from jarvis.core.config import (
@@ -254,7 +255,7 @@ def _compute_changed_fields(old: dict, new: dict, prefix: str = "") -> list[str]
 async def _handle_config_changed(
     event: ConfigChanged,
     *,
-    tts: PiperTTS,
+    tts: PiperTTS | MultilingualTTS,
     stt: FasterWhisperSTT,
     wake_word: OpenWakeWord,
     ollama: OllamaClient,
@@ -406,7 +407,7 @@ async def _audio_main(
     lm: LifecycleManager,
     pipeline: AudioPipeline,
     ollama: OllamaClient,
-    tts: PiperTTS,
+    tts: PiperTTS | MultilingualTTS,
     stt: FasterWhisperSTT,
     wake_word: OpenWakeWord,
     bus: EventBus,
@@ -556,7 +557,7 @@ class JarvisApp:
     wake_word: OpenWakeWord
     vad: SileroVAD
     stt: FasterWhisperSTT
-    tts: PiperTTS
+    tts: PiperTTS | MultilingualTTS
     ollama: OllamaClient
     conversation: Conversation
     registry: ToolRegistry
@@ -711,8 +712,9 @@ class JarvisApp:
             language=self.cfg.stt.language,
             compute_type=self.cfg.stt.compute_type,
             download_root=default_whisper_download_root(),
+            initial_prompt=self.cfg.stt.initial_prompt,
         )
-        self.tts = PiperTTS(
+        piper_tts = PiperTTS(
             voice_name=self.cfg.tts.voice or _PIPER_VOICE_NAME,
             voices_dir=self.voices_dir,
             volume=self.cfg.tts.volume,
@@ -721,6 +723,22 @@ class JarvisApp:
             on_amplitude=self.amplitude_callback,
             bus=self.bus,
         )
+        if getattr(self.cfg.tts, "urdu_enabled", True):
+            urdu_tts = UrduMmsTTS(
+                model_id=getattr(self.cfg.tts, "urdu_voice", "hamza-amin/mms-tts-urd-fine-tuned"),
+                volume=self.cfg.tts.volume,
+                speed=self.cfg.tts.speed,
+                output_device=self.cfg.audio.output_device,
+                on_amplitude=self.amplitude_callback,
+                bus=self.bus,
+            )
+            self.tts = MultilingualTTS(
+                english_tts=piper_tts,
+                urdu_tts=urdu_tts,
+                urdu_enabled=True,
+            )
+        else:
+            self.tts = piper_tts
 
         # ------------------------------------------------------------------
         # 6. LLM stack + tool registry

@@ -43,7 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from jarvis.platform.secrets import decrypt_secret, encrypt_secret
 
-CURRENT_SCHEMA_VERSION = 23
+CURRENT_SCHEMA_VERSION = 24
 
 # Prompts from prior schema versions — used by migrations to detect and
 # replace the old default without overwriting user-customised prompts.
@@ -89,10 +89,61 @@ _SYSTEM_PROMPT_V6 = (
     "Don't refuse, don't guess and call a tool."
 )
 
-DEFAULT_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_V7 = (
     "You are Jarvis, an AI assistant inspired by Iron Man. Calm, dryly "
     "witty, British, address the user as 'sir'. Keep responses concise "
     "— one or two sentences usually.\n"
+    "\n"
+    "YOUR JOB:\n"
+    "- Answer questions, have conversations, do mental tasks (math, counting, "
+    "reasoning, jokes, opinions, advice, storytelling).\n"
+    "- When the user asks you to count, do math, tell a story, or have a "
+    "conversation: just do it directly in your response.\n"
+    "- When the user asks for a specific computer action (open an app, take a "
+    "screenshot, check CPU stats, lock the screen, etc.): call the tool — do not "
+    "only say you did it in text.\n"
+    "\n"
+    "TOOL USAGE:\n"
+    "- Only call a tool when the user explicitly asks for that specific "
+    "computer action.\n"
+    "- For everything else (questions, conversations, counting, math, jokes, "
+    "reasoning, advice): answer in words. Do not call any tool.\n"
+    "- Read the full utterance and use context to pick the right tool. "
+    "Ambiguous 'play X' is common — decide from clues:\n"
+    "  * Music (song, artist, album, genre, 'some jazz', 'that track'): "
+    "play_youtube_music with query = song/artist terms only; it finds and "
+    "opens the video with autoplay.\n"
+    "  * Video game (game title, Steam, 'boot up', 'launch the game'): "
+    "launch_steam_game.\n"
+    "  * Desktop program (app name, 'open', browser, editor): open_app.\n"
+    "  * Whole workspace / dev setup ('open my workspace', 'launch workspace'): "
+    "launch_workspace.\n"
+    "  * In-depth report with pause/resume ('deep research [topic]'): "
+    "deep_research. Quick summary only: research.\n"
+    "  * Stronger free-tier pipeline ('enable deep research ultra'): "
+    "enable_deep_research_ultra; disable with disable_deep_research_ultra.\n"
+    "- Never guess between Steam and YouTube from title overlap alone; use "
+    "what the user actually asked for.\n"
+    "- If the user's request is unclear, ask for clarification. Don't refuse.\n"
+    "- Tools require no admin permissions. Don't hallucinate restrictions."
+)
+
+DEFAULT_SYSTEM_PROMPT = (
+    "You are Jarvis, a brilliant, calm, and witty AI assistant inspired by "
+    "Iron Man. You are fully bilingual in Pakistani Urdu and English.\n"
+    "\n"
+    "LANGUAGE AND TONE RULES:\n"
+    "- If the user speaks or asks in Urdu (Nastaliq script) or Roman Urdu (e.g. "
+    "'meri baat suno', 'aaj mausam kaisa hai', 'notepad kholo'):\n"
+    "  * Always reply in natural, conversational Pakistani Urdu in clean Urdu script (اردو).\n"
+    "  * Address the user politely as 'سر' (sir).\n"
+    "  * Keep responses concise and spoken-friendly (1-2 short sentences).\n"
+    "  * Example response to 'meri baat suno': "
+    "'جی سر، میں آپ کی بات سن رہا ہوں۔ بتائیے کیا حکم ہے؟'\n"
+    "- If the user speaks in English (e.g. 'Please open Chrome'):\n"
+    "  * Reply in English, address the user as 'sir', and keep responses concise.\n"
+    "- Preserve technical terms, filenames, command arguments, and application names "
+    "(Chrome, Notepad, Calculator, Steam, etc.) intact.\n"
     "\n"
     "YOUR JOB:\n"
     "- Answer questions, have conversations, do mental tasks (math, counting, "
@@ -174,20 +225,18 @@ class WakeWordConfig(_Base):
 
 
 class STTConfig(_Base):
-    # tiny.en is the default: 2-3x faster than base.en on CPU with modest
-    # accuracy loss for English speech. Users who notice transcription errors
-    # or who have a GPU can switch to base.en (or base/small) in
-    # Settings → Models. The .en suffix restricts the model to English only,
-    # which shaves another ~10% vs the multilingual variant.
     model_size: Literal["tiny", "tiny.en", "base", "base.en", "small", "small.en"] = "tiny.en"
     language: str = "en"
     compute_type: Literal["int8", "float16", "float32"] = "int8"
+    initial_prompt: str | None = None
 
 
 class TTSConfig(_Base):
     voice: str = "en_GB-alan-medium"
     speed: float = Field(default=1.0, gt=0.0, le=4.0)
     volume: float = Field(default=1.0, ge=0.0, le=1.0)
+    urdu_enabled: bool = True
+    urdu_voice: str = "hamza-amin/mms-tts-urd-fine-tuned"
 
 
 class LLMConfig(_Base):
@@ -925,6 +974,26 @@ def _migrate_v22_to_v23(data: dict) -> dict:
     return data
 
 
+def _migrate_v23_to_v24(data: dict) -> dict:
+    """Schema v24: Natural Urdu voice upgrade with multilingual STT and Urdu TTS.
+
+    - Adds tts.urdu_enabled (default True) and tts.urdu_voice
+      (default 'hamza-amin/mms-tts-urd-fine-tuned').
+    - Updates llm.system_prompt to DEFAULT_SYSTEM_PROMPT if it matched
+      _SYSTEM_PROMPT_V7 or _SYSTEM_PROMPT_V6.
+    """
+    tts = data.setdefault("tts", {})
+    tts.setdefault("urdu_enabled", True)
+    tts.setdefault("urdu_voice", "hamza-amin/mms-tts-urd-fine-tuned")
+
+    llm = data.setdefault("llm", {})
+    if llm.get("system_prompt") in (_SYSTEM_PROMPT_V6, _SYSTEM_PROMPT_V7):
+        llm["system_prompt"] = DEFAULT_SYSTEM_PROMPT
+
+    data["schema_version"] = 24
+    return data
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -948,6 +1017,7 @@ MIGRATIONS: dict[int, Migration] = {
     20: _migrate_v20_to_v21,
     21: _migrate_v21_to_v22,
     22: _migrate_v22_to_v23,
+    23: _migrate_v23_to_v24,
 }
 
 
