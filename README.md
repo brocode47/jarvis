@@ -12,6 +12,10 @@ Everything below runs on your PC. Anything that reaches the internet is called o
 
 **Core voice loop**
 - Wake-word activation ("Hey Jarvis") with configurable sensitivity
+- **Continuous follow-up listening:** after completing a command and speaking its response, Jarvis automatically returns to listening. You can issue consecutive commands without repeating "Hey Jarvis" after each one.
+- Configurable follow-up silence timeout (default 30 s); returns cleanly to IDLE if no follow-up is spoken.
+- **Voice-controlled standby:** say **"Mute the mic"**, **"Go to sleep"**, or **"Go to standby"** to place Jarvis in standby immediately.
+  > **Note on Standby vs. Physical Mic Mute:** Saying "Mute the mic" puts Jarvis in voice standby (MUTED mode). It stops command transcription and ordinary speech processing, but keeps lightweight wake-word detection active so saying "Hey Jarvis" wakes the assistant back up. It does **not** physically disconnect or disable your Windows microphone hardware. If you physically mute your microphone using a hardware switch or headset mute button, audio capture stops completely and you must unmute the hardware (or use the push-to-talk hotkey / tray icon) to reactivate.
 - Voice activity detection + endpointing (silero-vad)
 - Speech-to-text on-device (faster-whisper, `tiny` / `base` / `small`)
 - Streaming text-to-speech (Piper, `en_GB-alan-medium` by default)
@@ -22,7 +26,7 @@ Everything below runs on your PC. Anything that reaches the internet is called o
 - Stop / cancel words: "stop", "shut up", "never mind", "be quiet", "that's enough"
 
 **Modes & state**
-- Active / Muted / Sleeping modes (tray + hotkeys + voice)
+- Active / Muted (Standby) / Sleeping modes (tray + hotkeys + voice)
 - Sleep mode evicts the LLM from VRAM so your GPU is free
 - Idle / Listening / Thinking / Speaking states drive the overlay orb
 

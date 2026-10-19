@@ -167,10 +167,13 @@ def make_pipeline(
     min_utterance_ms: int = 0,
     # Barge-in is disabled by default in production (speaker->mic feedback),
     # but most pipeline tests want to exercise the path. Opt-in default True
-    # here keeps the existing barge-in tests assertion-shaped; the tripwire
-    # test below explicitly exercises False.
+    # barge-in tests assertion-shaped; the tripwire test below explicitly
+    # exercises False.
     barge_in_enabled: bool = True,
     on_wake=None,
+    # Follow-up listening defaults to False in this legacy test helper so
+    # the existing pipeline tests can assert the single-turn IDLE transition.
+    follow_up_listening_enabled: bool = False,
 ):
     bus = EventBus()
     sm = StateMachine(bus=bus)
@@ -189,6 +192,7 @@ def make_pipeline(
         min_utterance_ms=min_utterance_ms,
         barge_in_enabled=barge_in_enabled,
         on_wake=on_wake,
+        follow_up_listening_enabled=follow_up_listening_enabled,
     )
     return pipeline, bus, sm, source, ww, vad, stt, tts
 

@@ -43,7 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from jarvis.platform.secrets import decrypt_secret, encrypt_secret
 
-CURRENT_SCHEMA_VERSION = 22
+CURRENT_SCHEMA_VERSION = 23
 
 # Prompts from prior schema versions — used by migrations to detect and
 # replace the old default without overwriting user-customised prompts.
@@ -228,6 +228,14 @@ class LLMConfig(_Base):
     # one-shot dispatch — the tool's own output is spoken verbatim,
     # lowest latency, no follow-up reasoning.
     max_tool_iterations: int = Field(default=3, ge=1, le=10)
+    # Follow-up listening: after Jarvis completes a spoken response it
+    # automatically returns to LISTENING for this many seconds so the
+    # user can issue consecutive commands without repeating "Hey Jarvis".
+    # Set follow_up_listening_enabled = False to restore the original
+    # one-command-per-wake-word behaviour. The timeout is independent of
+    # inactivity_timeout_seconds (which governs conversation history).
+    follow_up_listening_enabled: bool = True
+    follow_up_idle_timeout_seconds: int = Field(default=30, gt=0)
 
 
 class ToolsConfig(_Base):
@@ -901,6 +909,22 @@ def _migrate_v21_to_v22(data: dict) -> dict:
     return data
 
 
+def _migrate_v22_to_v23(data: dict) -> dict:
+    """Schema v23: follow-up listening after each spoken response.
+
+    Adds llm.follow_up_listening_enabled (default True) and
+    llm.follow_up_idle_timeout_seconds (default 30). Enabled by default
+    so upgrading users immediately get the improved multi-turn flow.
+    Users who prefer the original one-command-per-wake-word behaviour
+    can set follow_up_listening_enabled = false in their config.
+    """
+    llm = data.setdefault("llm", {})
+    llm.setdefault("follow_up_listening_enabled", True)
+    llm.setdefault("follow_up_idle_timeout_seconds", 30)
+    data["schema_version"] = 23
+    return data
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -923,6 +947,7 @@ MIGRATIONS: dict[int, Migration] = {
     19: _migrate_v19_to_v20,
     20: _migrate_v20_to_v21,
     21: _migrate_v21_to_v22,
+    22: _migrate_v22_to_v23,
 }
 
 

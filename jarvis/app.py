@@ -361,6 +361,22 @@ async def _handle_config_changed(
             new.lifecycle.auto_sleep_enabled, new.lifecycle.idle_timeout_minutes,
         )
 
+    # Follow-up listening: cheap attribute writes (no restart needed).
+    if "llm.follow_up_listening_enabled" in fields:
+        pipeline._follow_up_listening_enabled = new.llm.follow_up_listening_enabled
+        log.info(
+            "hot-reload: follow_up_listening_enabled -> %s",
+            new.llm.follow_up_listening_enabled,
+        )
+    if "llm.follow_up_idle_timeout_seconds" in fields:
+        pipeline._follow_up_idle_timeout_seconds = float(
+            new.llm.follow_up_idle_timeout_seconds
+        )
+        log.info(
+            "hot-reload: follow_up_idle_timeout_seconds -> %d",
+            new.llm.follow_up_idle_timeout_seconds,
+        )
+
     # MCP servers: the Settings → Tools tab edits the whole list, so any
     # change surfaces as the "mcp_servers" path. reload_from_config diffs
     # live connections against the new desired set (add/remove/reconnect).
@@ -757,6 +773,11 @@ class JarvisApp:
                 self.cfg.llm.conversation_continuity_seconds
             ),
             log_wake_during_speaking=self.cfg.debug.log_wake_during_speaking,
+            follow_up_listening_enabled=self.cfg.llm.follow_up_listening_enabled,
+            follow_up_idle_timeout_seconds=float(
+                self.cfg.llm.follow_up_idle_timeout_seconds
+            ),
+            on_standby_request=self._request_standby_from_audio_thread,
         )
 
         # ------------------------------------------------------------------
@@ -987,6 +1008,23 @@ class JarvisApp:
     # caller's run_coroutine_threadsafe wrapper.
     def _request_mode(self, target: Mode):
         return self.mode_coord.request(target)
+
+    def _request_standby_from_audio_thread(self) -> None:
+        """Called from the audio loop when the user says a standby phrase
+        (e.g. 'Mute the mic'). Routes a MUTED request through the
+        coordinator so the same race rules and sleep-confirmation logic
+        apply as for tray/hotkey mutes.
+
+        This is a sync callback invoked ON the audio loop thread, so we
+        schedule the coordinator coroutine as a task rather than calling
+        run_coroutine_threadsafe."""
+        loop = self.audio_loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            loop.create_task(self.mode_coord.request(Mode.MUTED))
+        except Exception:
+            log.exception("_request_standby_from_audio_thread failed")
 
     def _tray_open(self, panel):
         # The panel is read from its attribute by the caller's lambda, which

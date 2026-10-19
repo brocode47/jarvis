@@ -90,6 +90,23 @@ _FRAME_QUEUE_DEFAULT = 32
 # (or headphone-only deployment) is in place.
 BARGE_IN_ENABLED: bool = False
 
+# Default follow-up idle timeout (seconds). After the spoken response
+# completes, the pipeline waits this long for follow-up speech before
+# returning to IDLE / wake-word-only mode. Configurable via
+# llm.follow_up_idle_timeout_seconds in JarvisConfig.
+FOLLOW_UP_IDLE_TIMEOUT_DEFAULT: float = 30.0
+
+# Phrases that trigger voice-controlled standby. Normalised to lowercase
+# with trailing punctuation stripped before matching.
+_STANDBY_PHRASES: frozenset[str] = frozenset({
+    "mute the mic",
+    "mute the microphone",
+    "go to standby",
+    "standby mode",
+    "go to sleep",
+    "go to sleep jarvis",
+})
+
 
 class AudioPipeline:
     def __init__(
@@ -110,6 +127,15 @@ class AudioPipeline:
         barge_in_enabled: bool = BARGE_IN_ENABLED,
         on_wake: Callable[[], None] | None = None,
         log_wake_during_speaking: bool = False,
+        # Follow-up listening: when True, Jarvis returns to LISTENING after
+        # each spoken response so consecutive commands need no wake word.
+        follow_up_listening_enabled: bool = True,
+        # Seconds of silence during follow-up before returning to IDLE.
+        follow_up_idle_timeout_seconds: float = FOLLOW_UP_IDLE_TIMEOUT_DEFAULT,
+        # Called when the user says a standby phrase ("mute the mic").
+        # The coordinator handles the actual mode transition; the pipeline
+        # just detects the intent and delegates.
+        on_standby_request: Callable[[], None] | None = None,
     ) -> None:
         self._source = source
         self._wake_word = wake_word
@@ -132,6 +158,13 @@ class AudioPipeline:
         self._on_wake = on_wake
         self._log_wake_during_speaking = log_wake_during_speaking
         self._speaking_debug_frame_count: int = 0
+        self._follow_up_listening_enabled = follow_up_listening_enabled
+        self._follow_up_idle_timeout_seconds = follow_up_idle_timeout_seconds
+        self._on_standby_request = on_standby_request
+        # Set True while we are in a follow-up listening window so the
+        # response chain and wake-detection handler can distinguish it
+        # from a primary (post-wake-word) LISTENING session.
+        self._in_follow_up_listening: bool = False
 
         self._q_frames: asyncio.Queue[AudioFrame] = asyncio.Queue(
             maxsize=frame_queue_maxsize
@@ -230,6 +263,7 @@ class AudioPipeline:
         # in the gap between sleep wake and this line.
         if self._sm.conversational_state is ConversationalState.LISTENING:
             log.info("listening silence timeout; returning to IDLE")
+            self._in_follow_up_listening = False
             self._sm.set_conversational_state(ConversationalState.IDLE)
 
     # -- frame loop --
@@ -324,7 +358,12 @@ class AudioPipeline:
         # can't bias the LLM into firing the wrong tool on a fresh
         # request. Failure is swallowed-with-log because a busted hook
         # must not stop the listening transition.
-        if self._on_wake is not None:
+        #
+        # NOTE: when already in follow-up listening (LISTENING state), a
+        # wake-word detection is treated as a barge-in reset, NOT as a
+        # fresh session start. We skip the history-clear in that case to
+        # preserve conversation context across follow-up turns.
+        if self._on_wake is not None and not self._in_follow_up_listening:
             try:
                 self._on_wake()
             except Exception:
@@ -337,6 +376,7 @@ class AudioPipeline:
             )
         else:
             self._blackout_frames_remaining = 0
+        self._in_follow_up_listening = False  # explicit wake always resets
         self._sm.set_conversational_state(ConversationalState.LISTENING)
         self._start_listening_timer()
 
@@ -352,6 +392,7 @@ class AudioPipeline:
                 "utterance too short (%d ms < %d ms); returning to IDLE",
                 audio_ms, self._min_utterance_ms,
             )
+            self._in_follow_up_listening = False
             self._sm.set_conversational_state(ConversationalState.IDLE)
             return
         self._sm.set_conversational_state(ConversationalState.THINKING)
@@ -385,6 +426,8 @@ class AudioPipeline:
         self._listen_buffer.clear()
         self._vad.reset()
         # SPEAKING -> LISTENING: legal, and the user clearly wants to talk.
+        # Treat barge-in as a follow-up (no wake hook, keep history).
+        self._in_follow_up_listening = True
         self._sm.set_conversational_state(ConversationalState.LISTENING)
         self._start_listening_timer()
 
@@ -398,7 +441,24 @@ class AudioPipeline:
 
             if not text.strip():
                 # No speech; abort cleanly back to IDLE.
+                self._in_follow_up_listening = False
                 self._sm.set_conversational_state(ConversationalState.IDLE)
+                return
+
+            # --- Voice-controlled standby detection -----------------------
+            # Check BEFORE routing to the LLM so standby phrases do not
+            # trigger tools or conversation turns. Normalise to lowercase,
+            # strip trailing punctuation for robustness.
+            normalized = text.strip().lower().rstrip(".,!?")
+            if normalized in _STANDBY_PHRASES:
+                log.info("[standby] phrase detected: %r", text)
+                self._in_follow_up_listening = False
+                self._sm.set_conversational_state(ConversationalState.IDLE)
+                if self._on_standby_request is not None:
+                    try:
+                        self._on_standby_request()
+                    except Exception:
+                        log.exception("on_standby_request hook raised; ignoring")
                 return
 
             # Tee the producer into speak_stream. Each chunk yielded by
@@ -432,25 +492,82 @@ class AudioPipeline:
 
             if not first_chunk_seen:
                 # Producer yielded nothing; nothing to speak.
+                self._in_follow_up_listening = False
                 self._sm.set_conversational_state(ConversationalState.IDLE)
                 return
 
             self._bus.publish(
                 LLMResponseComplete(full_text="".join(full_text_parts))
             )
-            self._sm.set_conversational_state(ConversationalState.IDLE)
+
+            # --- Follow-up listening transition ---------------------------
+            # After speaking, decide whether to keep the session open for a
+            # follow-up command or return to wake-word-only (IDLE) mode.
+            #
+            # Transition path: SPEAKING → LISTENING is already legal in the
+            # state machine (see _LEGAL_CS_TRANSITIONS). We reuse it here
+            # rather than inventing a new CS enum value, keeping the SM
+            # minimal. The _in_follow_up_listening flag distinguishes this
+            # session from a primary (post-wake-word) LISTENING window so
+            # the on_wake hook is NOT called and history is NOT cleared.
+            if self._follow_up_listening_enabled:
+                log.info("[follow-up] returning to LISTENING after response")
+                self._listen_buffer.clear()
+                self._vad.reset()
+                self._blackout_frames_remaining = 0
+                self._in_follow_up_listening = True
+                self._sm.set_conversational_state(ConversationalState.LISTENING)
+                # Use the follow-up idle timeout (typically longer than
+                # the initial listening timeout) for the silence deadline.
+                self._cancel_listening_timer()
+                self._listening_timer = asyncio.create_task(
+                    self._follow_up_timeout_coro()
+                )
+            else:
+                self._in_follow_up_listening = False
+                self._sm.set_conversational_state(ConversationalState.IDLE)
+
         except asyncio.CancelledError:
-            # Barge-in or shutdown. Re-raise so the outer awaiter sees it.
+            # Barge-in or shutdown. Clear follow-up flag before re-raising
+            # so callers observe a clean state. Barge-in (_handle_barge_in)
+            # immediately sets _in_follow_up_listening = True after cancelling,
+            # so this write is always overridden when barge-in is the cause.
+            self._in_follow_up_listening = False
             raise
         except Exception:
             log.exception("response chain crashed")
             # Don't leave the SM stuck in THINKING/SPEAKING.
             try:
+                self._in_follow_up_listening = False
                 self._sm.set_conversational_state(ConversationalState.IDLE)
             except Exception:
                 log.exception("recovery to IDLE failed")
         finally:
             self._tts_started_at = None
+
+    async def _follow_up_timeout_coro(self) -> None:
+        """Idle timeout for the follow-up listening window.
+
+        Uses the follow_up_idle_timeout_seconds value, which is typically
+        longer than the primary listening_timeout_seconds, giving the user
+        reasonable time to speak a follow-up without needing the wake word.
+        Returns to IDLE (not standby) when it fires; a fresh wake word will
+        re-activate if needed.
+        """
+        try:
+            await asyncio.sleep(self._follow_up_idle_timeout_seconds)
+        except asyncio.CancelledError:
+            return
+        if (
+            self._sm.conversational_state is ConversationalState.LISTENING
+            and self._in_follow_up_listening
+        ):
+            log.info(
+                "[follow-up] idle timeout (%.0fs); returning to IDLE",
+                self._follow_up_idle_timeout_seconds,
+            )
+            self._in_follow_up_listening = False
+            self._sm.set_conversational_state(ConversationalState.IDLE)
 
     async def _cancel_response_chain(self) -> None:
         # Order per design note: TTS first (user-perceptible), then drain
